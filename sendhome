@@ -1,0 +1,88 @@
+#!/bin/bash
+
+connectHome() {
+	myip=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1')
+	whoiam=$(whoami)
+	echo $myip | ssh $whoiam@$1 -T "cat > ~/.cache/homeip"
+	if [[ -d $outfile ]]
+	then
+		scp -r $outfile "jojo2357@$homeip:$(dirname "$outfile")"
+	elif [[ -f $outfile ]]
+	then
+		scp $outfile $whoiam@$homeip:$outfile
+	else
+		echo "Cannot copy $outfile does not exist"
+	fi
+}
+
+# find out our home's MAC address. This is unchanging so we can read it from file for safekeeping
+if [[ -f ~/.homemac ]]
+then
+	# i tried to just use =~ but it would not let me have a-f so i just went with grepping it in
+	homemac=$(cat ~/.homemac | grep -m 1 -oP "([\da-f]{2}:){5}[\da-f]{2}")
+	if [[ -z $homemac ]]
+	then
+		echo "Invalid MAC address! Please make sure to use lowercase hex"
+		exit 1
+	fi
+else
+	echo "Home MAC address file not found. Please place your home MAC address inside ~/.homemac"
+	exit 1
+fi
+
+echo "Checking file..."
+
+outfile=$(realpath $1)
+outfile=${outfile/}
+
+if [[ $# -ge 1 && (-f $outfile || -d $outfile) ]]
+then
+	echo "${outfile} looks valid."
+else
+	echo "First argument is not a file!"
+	exit 1
+fi
+
+echo "Checking network..."
+
+# Verify we are connected to home's network
+if ! grep -Fxq "$(iwgetid -r)" ~/.homenet
+then
+	if [[ -z $(iwgetid -r) ]]
+	then
+		echo "No network"
+		exit 1
+	else
+		echo "'$(iwgetid -r)' is not a valid network in .homenet"
+		exit 1
+	fi
+fi
+
+if [[ -f ~/.cache/homeip ]]
+then
+	echo "Checking cached home..."
+	homeip=$(cat ~/.cache/homeip)
+	ping -c 1 $homeip > /dev/null
+	if [ $? -eq 0 ]
+	then
+		echo "Verifying host..."
+		if [[ $(arp -a | grep -m 1 -oP "(?<=\($homeip\) at )([\da-f]{2}:){5}[\da-f]{2}") != "$homemac" ]]
+		then
+			echo "Host IP and MAC disagree"
+			rm ~/.cache/homeip
+		else
+			connectHome $homeip
+			exit 1
+		fi
+	else
+		echo "Home offline!"
+	fi
+fi
+
+echo "Searching for home..."
+
+homeip=$(sudo arp-scan -lq | grep -i -m 1 $homemac | grep -oP "\d+\.\d+\.\d+\.\d+")
+
+echo $homeip > ~/.cache/homeip
+
+connectHome $homeip

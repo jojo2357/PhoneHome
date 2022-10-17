@@ -1,0 +1,90 @@
+#!/bin/bash
+
+# This function takes no args and uses iam and homeip to phone home
+connectHome() {
+	# this is a handshake that we will perform so that home knows where we are. Since it is very easy for us to find our IP, we will write on home's cache our location UNLESS we are already in an ssh. if that is the case, it would be safer not to, or we can presume that we are phoning home from a phone home and thus we already have that home cached.
+	if [ -z "$SSH_CLIENT" ] && [ -z "$SSH_TTY" ]
+	then
+		echo $myip | ssh $iam@$homeip -T "cat > ~/.cache/homeip"
+		myip=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1')
+	fi
+	ssh $iam@$homeip
+}
+
+# find out our home's MAC address. This is unchanging so we can read it from file for safekeeping
+if [[ -f ~/.homemac ]]
+then
+	# i tried to just use =~ but it would not let me have a-f so i just went with grepping it in
+	homemac=$(cat ~/.homemac | grep -m 1 -oP "([\da-f]{2}:){5}[\da-f]{2}")
+	if [[ -z $homemac ]]
+	then
+		echo "Invalid MAC address! Please make sure to use lowercase hex"
+		exit 1
+	fi
+else
+	echo "Home MAC address file not found. Please place your MAC address inside ~/.homemac"
+	exit 1
+fi
+
+echo "Finding myself..."
+
+# we assume that home shares the same name as us. If you sudo phonehome then it will use a different mac from above
+iam=$(whoami)
+
+echo "Checking network"
+
+# Verify we are connected to home's network
+if ! grep -Fxq "$(iwgetid -r)" ~/.homenet
+then
+	if [[ -z $(iwgetid -r) ]]
+	then
+		echo "No network"
+		exit 1
+	else
+		echo "'$(iwgetid -r)' is not a valid network in .homenet"
+		exit 1
+	fi
+fi
+
+# If we have cached home's ip...
+if [[ -f ~/.cache/homeip ]]
+then
+	echo "Checking cached home..."
+	homeip=$(cat ~/.cache/homeip)
+	# ping home.
+	ping -c 1 $homeip > /dev/null
+	# if the ping succeeded
+	if [ $? -eq 0 ]
+	then
+		echo "Verifying host..."
+		# the ping should have cached home's mac and ip. we will check to see what mac that cached home had
+		if [[ $(arp -a | grep -m 1 -oP "(?<=\($homeip\) at )([\da-f]{2}:){5}[\da-f]{2}") != "$homemac" ]]
+		then
+			# after pinging cached home ip, we have reason to believe that we are talking to a different device... we should discard that cache
+			echo "Host IP and MAC disagree"
+			rm ~/.cache/homeip
+		else
+			# That IP claims to be home, lets try connecting
+			connectHome
+			exit 0
+		fi
+	else
+		# Home did not respond! We will NOT delete the cache unless we can refind home in a different ip later 
+		echo "Home offline!"
+	fi
+fi
+
+echo "Searching for alternate home..."
+
+# Scan the network looking for home's mac. When it is found, we will pull out home's ip
+homeip=$(sudo arp-scan -lq | grep -i -m 1 $homemac | grep -oP "\d+\.\d+\.\d+\.\d+")
+
+# if we have a home ip, cache it and try connecting
+if [ -n "$homeip" ]
+then
+	echo $homeip > ~/.cache/homeip
+
+	connectHome
+else
+	echo "Home could not be found on network $(iwgetid -r)"
+fi
