@@ -7,6 +7,7 @@ connectHome() {
 	then
 		echo $myip | ssh $iam@$homeip -T "cat > ~/.cache/homeip"
 		myip=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1')
+		echo $myip | ssh $iam@$homeip -T "cat > ~/.cache/homeip"
 	fi
 	ssh $iam@$homeip
 }
@@ -52,7 +53,7 @@ then
 	echo "Checking cached home..."
 	homeip=$(cat ~/.cache/homeip)
 	# ping home.
-	ping -c 1 $homeip > /dev/null
+	ping -c 1 -q $homeip > /dev/null
 	# if the ping succeeded
 	if [ $? -eq 0 ]
 	then

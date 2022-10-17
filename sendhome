@@ -3,10 +3,10 @@
 connectHome() {
 	myip=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1')
 	whoiam=$(whoami)
-	echo $myip | ssh $whoiam@$1 -T "cat > ~/.cache/homeip"
+	echo $myip | ssh $whoiam@$homeip -T "cat > ~/.cache/homeip"
 	if [[ -d $outfile ]]
 	then
-		scp -r $outfile "jojo2357@$homeip:$(dirname "$outfile")"
+		scp -r $outfile "$whoiam@$homeip:$(dirname "$outfile")"
 	elif [[ -f $outfile ]]
 	then
 		scp $outfile $whoiam@$homeip:$outfile
@@ -62,7 +62,7 @@ if [[ -f ~/.cache/homeip ]]
 then
 	echo "Checking cached home..."
 	homeip=$(cat ~/.cache/homeip)
-	ping -c 1 $homeip > /dev/null
+	ping -c 1 -q $homeip > /dev/null
 	if [ $? -eq 0 ]
 	then
 		echo "Verifying host..."
@@ -85,4 +85,4 @@ homeip=$(sudo arp-scan -lq | grep -i -m 1 $homemac | grep -oP "\d+\.\d+\.\d+\.\d
 
 echo $homeip > ~/.cache/homeip
 
-connectHome $homeip
+connectHome
