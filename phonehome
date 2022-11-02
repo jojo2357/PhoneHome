@@ -1,5 +1,42 @@
 #!/bin/bash
 
+sendhome_version="v0.1.0"
+
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help)
+      echo "The phonehome utility, by jojo2357. Usage:"
+      echo " phonehome <OPTIONS>"
+      echo ""
+      echo "OPTIONS:"
+      echo "  -h, --help          I think you figured this one out"
+      echo "  -f, --force-cache   Skips verification of the home device. If you know what home should be, you can place it in ~/.cache/homeip and use this option"
+      exit 0
+      shift # past argument
+      ;;
+    -f|--force-cache)
+      FORCE=1
+      shift # past argument
+      ;;
+    -v|--version)
+      echo "The sendhome utility, by jojo2357 $sendhome_version"
+      exit 0
+      ;;
+    -*|--*)
+      echo "Unknown option $1"
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1") # save positional arg
+      shift # past argument
+      ;;
+  esac
+done
+
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
 # This function takes no args and uses iam and homeip to phone home
 connectHome() {
 	# this is a handshake that we will perform so that home knows where we are. Since it is very easy for us to find our IP, we will write on home's cache our location UNLESS we are already in an ssh. if that is the case, it would be safer not to, or we can presume that we are phoning home from a phone home and thus we already have that home cached.
@@ -11,20 +48,37 @@ connectHome() {
 	ssh $iam@$homeip
 }
 
-# find out our home's MAC address. This is unchanging so we can read it from file for safekeeping
-if [[ -f ~/.homemac ]]
-then
-	# i tried to just use =~ but it would not let me have a-f so i just went with grepping it in
-	homemac=$(cat ~/.homemac | grep -m 1 -oP "([\da-f]{2}:){5}[\da-f]{2}")
-	if [[ -z $homemac ]]
-	then
-		echo "Invalid MAC address! Please make sure to use lowercase hex"
-		exit 1
-	fi
-else
-	echo "Home MAC address file not found. Please place your MAC address inside ~/.homemac"
-	exit 1
-fi
+fetchHomeMAC() {
+    # find out our home's MAC address. This is unchanging so we can read it from file for safekeeping
+    if [[ -f ~/.homemac ]]
+    then
+	    # i tried to just use =~ but it would not let me have a-f so i just went with grepping it in
+	    homemac=$(cat ~/.homemac | grep -m 1 -oP "([\da-f]{2}:){5}[\da-f]{2}")
+	    if [[ -z $homemac ]]
+	    then
+		    echo "Invalid MAC address! Please make sure to use lowercase hex"
+		    exit 1
+	    fi
+    else
+	    echo "Home MAC address file not found. Please place your home MAC address inside ~/.homemac"
+	    exit 1
+    fi
+}
+
+checkHomeNet() {
+    # Verify we are connected to home's network
+    if ! grep -Fxq "$(iwgetid -r)" ~/.homenet
+    then
+	    if [[ -z $(iwgetid -r) ]]
+	    then
+		    echo "No network"
+		    exit 1
+	    else
+		    echo "'$(iwgetid -r)' is not a valid network in .homenet"
+		    exit 1
+	    fi
+    fi
+}
 
 echo "Finding myself..."
 
@@ -33,17 +87,10 @@ iam=$(whoami)
 
 echo "Checking network"
 
-# Verify we are connected to home's network
-if ! grep -Fxq "$(iwgetid -r)" ~/.homenet
+if [ -z $FORCE ]
 then
-	if [[ -z $(iwgetid -r) ]]
-	then
-		echo "No network"
-		exit 1
-	else
-		echo "'$(iwgetid -r)' is not a valid network in .homenet"
-		exit 1
-	fi
+    fetchHomeMAC
+    checkHomeNet
 fi
 
 # If we have cached home's ip...
@@ -51,27 +98,34 @@ if [[ -f ~/.cache/homeip ]]
 then
 	echo "Checking cached home..."
 	homeip=$(cat ~/.cache/homeip)
-	# ping home.
-	ping -c 1 -q $homeip > /dev/null
-	# if the ping succeeded
-	if [ $? -eq 0 ]
+	if [ -n "$FORCE" ]
 	then
-		echo "Verifying host..."
-		# the ping should have cached home's mac and ip. we will check to see what mac that cached home had
-		if [[ $(arp -a | grep -m 1 -oP "(?<=\($homeip\) at )([\da-f]{2}:){5}[\da-f]{2}") != "$homemac" ]]
-		then
-			# after pinging cached home ip, we have reason to believe that we are talking to a different device... we should discard that cache
-			echo "Host IP and MAC disagree"
-			rm ~/.cache/homeip
-		else
-			# That IP claims to be home, lets try connecting
-			connectHome
-			exit 0
-		fi
+	    connectHome
+	    exit 0
 	else
-		# Home did not respond! We will NOT delete the cache unless we can refind home in a different ip later 
-		echo "Home offline!"
+	    echo "Pinging home..."
+	    ping -c 1 -q $homeip > /dev/null
+	    if [ $? -eq 0 ]
+	    then
+		    echo "Verifying host..."
+		    if [[ $(arp -a | grep -m 1 -oP "(?<=\($homeip\) at )([\da-f]{2}:){5}[\da-f]{2}") != "$homemac" ]]
+		    then
+			    echo "Host IP and MAC disagree"
+			    rm ~/.cache/homeip
+		    else
+			    connectHome
+			    exit 0
+		    fi
+	    else
+		    echo "Home offline!"
+	    fi
 	fi
+fi
+
+if [ -n "$FORCE" ]
+then
+    echo "Force was used, and did not work, maybe try adding more force?"
+    exit 1
 fi
 
 echo "Searching for alternate home..."

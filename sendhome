@@ -1,5 +1,47 @@
 #!/bin/bash
 
+sendhome_version="v0.1.0"
+
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help)
+      echo "The sendhome utility, by jojo2357. Usage:"
+      echo " sendhome <OPTIONS> source"
+      echo ""
+      echo "OPTIONS:"
+      echo "  -h, --help          I think you figured this one out"
+      echo "  -f, --force-cache   Skips verification of the home device. If you know what home should be, you can place it in ~/.cache/homeip and use this option"
+      echo "  -m, --mkdir         Creates folders on the remote host if they do not exist"
+      exit 0
+      shift # past argument
+      ;;
+    -f|--force-cache)
+      FORCE=1
+      shift # past argument
+      ;;
+    -m|--mkdir)
+      MKDIR=1
+      shift # past argument
+      ;;
+    -v|--version)
+      echo "The sendhome utility, by jojo2357 $sendhome_version"
+      exit 0
+      ;;
+    -*|--*)
+      echo "Unknown option $1"
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1") # save positional arg
+      shift # past argument
+      ;;
+  esac
+done
+
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
 connectHome() {
 	whoiam=$(whoami)
 	if [ -z "$SSH_CLIENT" ] && [ -z "$SSH_TTY" ]
@@ -9,77 +51,122 @@ connectHome() {
 	fi
 	if [[ -d $outfile ]]
 	then
-		scp -r $outfile "$whoiam@$homeip:$(dirname "$outfile")"
+	    echo "Copying $outfile to $(dirname "$outfile")"
+		scp -r "$outfile" $whoiam@$homeip:"'$(dirname "$outfile")'"
+		if [[ $# -ge 1 ]]
+		then
+		    if [[ -n "$MKDIR" ]]
+		    then
+		        if ! ssh $whoiam@$homeip "[ -d '$(dirname "$outfile")' ]"
+		        then
+		            ssh $whoiam@$homeip "mkdir -p \"$(dirname "$outfile")\""
+		            
+		            scp -r "$outfile" $whoiam@$homeip:"'$(dirname "$outfile")'"
+		            
+		            if [[ $# -ge 1 ]]
+		            then
+		                echo "Something went wrong, best of luck to you."
+	                else
+	                    echo "Mkdir successful"
+		            fi
+		        fi
+		    else
+		        echo "Something went wrong. Maybe try making the dir or providing the -m|--mkdir flag"
+		    fi
+		fi
 	elif [[ -f $outfile ]]
 	then
-		scp $outfile $whoiam@$homeip:$outfile
+		scp "'$outfile'" $whoiam@$homeip:"'$outfile'"
 	else
 		echo "Cannot copy $outfile does not exist"
 	fi
 }
 
-# find out our home's MAC address. This is unchanging so we can read it from file for safekeeping
-if [[ -f ~/.homemac ]]
-then
-	# i tried to just use =~ but it would not let me have a-f so i just went with grepping it in
-	homemac=$(cat ~/.homemac | grep -m 1 -oP "([\da-f]{2}:){5}[\da-f]{2}")
-	if [[ -z $homemac ]]
-	then
-		echo "Invalid MAC address! Please make sure to use lowercase hex"
-		exit 1
-	fi
-else
-	echo "Home MAC address file not found. Please place your home MAC address inside ~/.homemac"
-	exit 1
-fi
+fetchHomeMAC() {
+    # find out our home's MAC address. This is unchanging so we can read it from file for safekeeping
+    if [[ -f ~/.homemac ]]
+    then
+	    # i tried to just use =~ but it would not let me have a-f so i just went with grepping it in
+	    homemac=$(cat ~/.homemac | grep -m 1 -oP "([\da-f]{2}:){5}[\da-f]{2}")
+	    if [[ -z $homemac ]]
+	    then
+		    echo "Invalid MAC address! Please make sure to use lowercase hex"
+		    exit 1
+	    fi
+    else
+	    echo "Home MAC address file not found. Please place your home MAC address inside ~/.homemac"
+	    exit 1
+    fi
+}
+
+checkHomeNet() {
+    # Verify we are connected to home's network
+    if ! grep -Fxq "$(iwgetid -r)" ~/.homenet
+    then
+	    if [[ -z $(iwgetid -r) ]]
+	    then
+		    echo "No network"
+		    exit 1
+	    else
+		    echo "'$(iwgetid -r)' is not a valid network in .homenet"
+		    exit 1
+	    fi
+    fi
+}
 
 echo "Checking file..."
 
-outfile=$(realpath $1)
-outfile=${outfile/}
+outfile=$(realpath "$1")
+outfile="${outfile/}"
 
-if [[ $# -ge 1 && (-f $outfile || -d $outfile) ]]
+if [[ $# -ge 1 && (-f "$outfile" || -d "$outfile") ]]
 then
 	echo "${outfile} looks valid."
 else
-	echo "First argument is not a file!"
+	echo "First argument is not a file! Ya im mean like that"
 	exit 1
 fi
 
 echo "Checking network..."
 
-# Verify we are connected to home's network
-if ! grep -Fxq "$(iwgetid -r)" ~/.homenet
+if [ -z $FORCE ]
 then
-	if [[ -z $(iwgetid -r) ]]
-	then
-		echo "No network"
-		exit 1
-	else
-		echo "'$(iwgetid -r)' is not a valid network in .homenet"
-		exit 1
-	fi
+    fetchHomeMAC
+    checkHomeNet
 fi
 
 if [[ -f ~/.cache/homeip ]]
 then
 	echo "Checking cached home..."
 	homeip=$(cat ~/.cache/homeip)
-	ping -c 1 -q $homeip > /dev/null
-	if [ $? -eq 0 ]
+	if [ -n "$FORCE" ]
 	then
-		echo "Verifying host..."
-		if [[ $(arp -a | grep -m 1 -oP "(?<=\($homeip\) at )([\da-f]{2}:){5}[\da-f]{2}") != "$homemac" ]]
-		then
-			echo "Host IP and MAC disagree"
-			rm ~/.cache/homeip
-		else
-			connectHome $homeip
-			exit 1
-		fi
+	    connectHome
+	    exit 0
 	else
-		echo "Home offline!"
+	    echo "Pinging home..."
+	    ping -c 1 -q $homeip > /dev/null
+	    if [ $? -eq 0 ]
+	    then
+		    echo "Verifying host..."
+		    if [[ $(arp -a | grep -m 1 -oP "(?<=\($homeip\) at )([\da-f]{2}:){5}[\da-f]{2}") != "$homemac" ]]
+		    then
+			    echo "Host IP and MAC disagree"
+			    rm ~/.cache/homeip
+		    else
+			    connectHome
+			    exit 0
+		    fi
+	    else
+		    echo "Home offline!"
+	    fi
 	fi
+fi
+
+if [ -n "$FORCE" ]
+then
+    echo "Force was used, and did not work, maybe try adding more force?"
+    exit 1
 fi
 
 echo "Searching for home..."
